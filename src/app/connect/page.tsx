@@ -14,7 +14,10 @@ export default function ConnectPage() {
   const [status, setStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
+  const [isCurrentlyConnected, setIsCurrentlyConnected] = useState(false);
+
   useEffect(() => {
+    setIsCurrentlyConnected(isDbConnected());
     // Si déjà connecté, pré-remplir
     const savedUrl = getDbUrl();
     if (savedUrl) setUrl(savedUrl);
@@ -45,8 +48,6 @@ export default function ConnectPage() {
       setLoading(false);
     }
   }
-
-  const isCurrentlyConnected = isDbConnected();
 
   return (
     <div className="auth-layout">
