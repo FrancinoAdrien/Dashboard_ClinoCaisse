@@ -17,6 +17,7 @@ export default function ConnectPage() {
   const [isCurrentlyConnected, setIsCurrentlyConnected] = useState(false);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
     setIsCurrentlyConnected(isDbConnected());
     // Si déjà connecté, pré-remplir
     const savedUrl = getDbUrl();
