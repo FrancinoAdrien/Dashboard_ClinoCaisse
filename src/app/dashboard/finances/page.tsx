@@ -12,7 +12,6 @@ type DateMode = 'today' | 'week' | 'month' | 'custom';
 // Mappings selon le fichier SANS CONFUSION
 const RECETTE_ACTIONS = [
   'Ajout capital',
-  'Vente creee',
   'Cloture Z effectuee',
   'Creance encaissee',
   'Paiement partiel recu',

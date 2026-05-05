@@ -1,34 +1,48 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
-import { BarChart3, RefreshCw, Search } from 'lucide-react';
+import { Package, RefreshCw, Search, TrendingUp, TrendingDown, BarChart3 } from 'lucide-react';
 import { getSupabaseClient } from '@/lib/supabase';
-import { formatDateTime, getDateRange, DateRange } from '@/lib/utils';
+import { formatMoney, formatDateTime, getDateRange, DateRange } from '@/lib/utils';
 import { exportCsv, exportExcel, exportPdf } from '@/lib/export';
 import DateRangePicker from '@/components/ui/DateRangePicker';
 import ExportMenu from '@/components/ui/ExportMenu';
 
 type DateMode = 'today' | 'week' | 'month' | 'custom';
 
-interface StockHisto {
-  uuid: string; produit_nom: string; ancienne_qte: number;
-  nouvelle_qte: number; delta: number; motif: string;
-  operateur: string; date_op: string;
+// Actions du journal considérées comme mouvements stock
+const STOCK_ACTIONS = [
+  'Approvisionnement stock',
+  'Ajustement stock',
+  'Correction stock',
+  'Inventaire stock',
+  'Stock ajuste',
+  'Stock corrige',
+];
+
+function isStockAction(action: string): boolean {
+  if (!action) return false;
+  const a = action.trim().toLowerCase();
+  return (
+    STOCK_ACTIONS.some(s => s.toLowerCase() === a) ||
+    a.includes('stock') ||
+    a.includes('approvisionnement') ||
+    a.includes('inventaire')
+  );
 }
-interface StockLot {
-  uuid: string; produit_uuid: string; numero_lot: string;
-  date_expiration: string; quantite_restante: number; localisation: string;
-}
-interface StockTransfert {
-  uuid: string; produit_uuid: string; quantite: number;
-  source: string; destination: string; date_transfert: string; operateur: string;
+
+interface JournalEntry {
+  uuid: string;
+  date_action: string;
+  categorie: string;
+  action: string;
+  detail: string;
+  operateur: string;
+  montant: number;
 }
 
 export default function StockPage() {
   const client = getSupabaseClient();
-  const [tab, setTab] = useState<'historique' | 'lots' | 'transferts'>('historique');
-  const [histo, setHisto] = useState<StockHisto[]>([]);
-  const [lots, setLots] = useState<StockLot[]>([]);
-  const [transferts, setTransferts] = useState<StockTransfert[]>([]);
+  const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [dateMode, setDateMode] = useState<DateMode>('month');
   const [customRange, setCustomRange] = useState<DateRange>(getDateRange('month'));
@@ -38,157 +52,157 @@ export default function StockPage() {
     if (!client) return;
     setLoading(true);
     const range = getDateRange(dateMode, customRange);
-    const [h, l, t] = await Promise.all([
-      client.from('stock_historique').select('*').gte('date_op', range.from).lte('date_op', range.to + 'T23:59:59').order('date_op', { ascending: false }).limit(500),
-      client.from('stock_lots').select('*').order('date_expiration'),
-      client.from('stock_transferts').select('*').gte('date_transfert', range.from).lte('date_transfert', range.to + 'T23:59:59').order('date_transfert', { ascending: false }),
-    ]);
-    setHisto(h.data || []);
-    setLots(l.data || []);
-    setTransferts(t.data || []);
+    const { data } = await client
+      .from('journal_activite')
+      .select('uuid, date_action, categorie, action, detail, operateur, montant')
+      .gte('date_action', range.from)
+      .lte('date_action', range.to + 'T23:59:59')
+      .order('date_action', { ascending: false })
+      .limit(2000);
+
+    // Filtrer uniquement les entrées stock
+    const stockData = (data || []).filter((j: JournalEntry) =>
+      isStockAction(j.action) || (j.categorie || '').toLowerCase().includes('stock')
+    );
+    setEntries(stockData);
     setLoading(false);
   }, [client, dateMode, customRange]);
 
   useEffect(() => { load(); }, [load]);
 
-  const filteredHisto = histo.filter(h => !search || h.produit_nom?.toLowerCase().includes(search.toLowerCase()) || h.motif?.toLowerCase().includes(search.toLowerCase()));
+  const filtered = entries.filter(e =>
+    !search ||
+    e.action?.toLowerCase().includes(search.toLowerCase()) ||
+    e.detail?.toLowerCase().includes(search.toLowerCase()) ||
+    e.operateur?.toLowerCase().includes(search.toLowerCase())
+  );
 
-  function deltaColor(delta: number) {
-    if (delta > 0) return 'var(--success)';
-    if (delta < 0) return 'var(--danger)';
-    return 'var(--text-muted)';
-  }
+  // Stats
+  const totalAppros = filtered.reduce((s, e) => s + (e.montant > 0 ? e.montant : 0), 0);
+  const nbMovements = filtered.length;
 
-  const histoExport = filteredHisto.map(h => ({
-    Produit: h.produit_nom, 'Ancienne qté': h.ancienne_qte, 'Nouvelle qté': h.nouvelle_qte,
-    Delta: h.delta, Motif: h.motif, Opérateur: h.operateur, Date: formatDateTime(h.date_op),
+  const exportData = filtered.map(e => ({
+    Date: formatDateTime(e.date_action),
+    Catégorie: e.categorie || '',
+    Action: e.action || '',
+    Détail: e.detail || '',
+    Opérateur: e.operateur || '—',
+    'Montant (Ar)': e.montant || 0,
   }));
 
-  const lotsExpirantBientot = lots.filter(l => {
-    if (!l.date_expiration) return false;
-    const d = new Date(l.date_expiration);
-    const diff = (d.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-    return diff <= 30 && diff >= 0;
-  });
+  const PDF_COLS = [
+    { header: 'Date', key: 'Date' },
+    { header: 'Action', key: 'Action' },
+    { header: 'Détail', key: 'Détail' },
+    { header: 'Opérateur', key: 'Opérateur' },
+    { header: 'Montant', key: 'Montant (Ar)' },
+  ];
 
   return (
     <div className="slide-up">
       <div className="page-header">
         <div className="page-title-group">
-          <h1 className="page-title">Stock & Ajustements</h1>
-          <p className="page-subtitle">Historique des mouvements, lots et transferts</p>
+          <h1 className="page-title">Stock & Approvisionnement</h1>
+          <p className="page-subtitle">Mouvements de stock enregistrés dans le journal d'activité</p>
         </div>
         <div className="page-actions">
-          {tab === 'historique' && (
-            <ExportMenu
-              onExportCsv={() => exportCsv(histoExport, 'stock_historique')}
-              onExportPdf={() => exportPdf('Historique Stock', histoExport, [{ header: 'Produit', key: 'Produit' }, { header: 'Delta', key: 'Delta' }, { header: 'Motif', key: 'Motif' }, { header: 'Date', key: 'Date' }], 'stock_historique')}
-              onExportExcel={() => exportExcel(histoExport, 'stock_historique', 'Historique')}
-            />
-          )}
-          <button className="btn btn-secondary btn-sm" onClick={load}><RefreshCw size={13} /></button>
+          <ExportMenu
+            onExportCsv={() => exportCsv(exportData, 'stock_mouvements')}
+            onExportPdf={() => exportPdf('Stock & Approvisionnement', exportData, PDF_COLS, 'stock_mouvements')}
+            onExportExcel={() => exportExcel(exportData, 'stock_mouvements', 'Stock')}
+          />
+          <button className="btn btn-secondary btn-sm" onClick={load} id="btn-refresh-stock">
+            <RefreshCw size={13} />
+          </button>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="filter-group" style={{ marginBottom: 16, width: 'fit-content' }}>
-        {(['historique', 'lots', 'transferts'] as const).map(t => (
-          <button key={t} className={`filter-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)} id={`tab-stock-${t}`}>
-            {t === 'historique' ? '📋 Ajustements' : t === 'lots' ? '📦 Lots' : '🔄 Transferts'}
-          </button>
-        ))}
+      {/* KPI Cards */}
+      <div className="stat-grid stat-grid-2 mb-6">
+        <div className="stat-card success">
+          <div className="stat-icon success"><BarChart3 size={18} /></div>
+          <div className="stat-value mono">{nbMovements}</div>
+          <div className="stat-label">Mouvements (Période)</div>
+        </div>
+        <div className="stat-card violet">
+          <div className="stat-icon violet"><TrendingUp size={18} /></div>
+          <div className="stat-value mono">{formatMoney(totalAppros)}</div>
+          <div className="stat-label">Valeur approvisionnements (Période)</div>
+        </div>
       </div>
 
-      {tab === 'historique' && (
-        <>
-          <div className="filters-bar">
-            <DateRangePicker mode={dateMode} customRange={customRange} onChange={(m, r) => { setDateMode(m); setCustomRange(r); }} />
-            <div style={{ position: 'relative', flex: 1, minWidth: 160, maxWidth: 280 }}>
-              <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input className="filter-input" style={{ paddingLeft: 30, width: '100%' }} placeholder="Produit, motif..." value={search} onChange={e => setSearch(e.target.value)} id="search-stock" />
-            </div>
-          </div>
-          <div className="table-wrapper">
-            <table>
-              <thead><tr><th>Produit</th><th>Motif</th><th>Opérateur</th><th style={{ textAlign: 'center' }}>Avant</th><th style={{ textAlign: 'center' }}>Delta</th><th style={{ textAlign: 'center' }}>Après</th><th>Date</th></tr></thead>
-              <tbody>
-                {loading ? <tr><td colSpan={7}><div className="state-box"><div className="spinner" /></div></td></tr>
-                : filteredHisto.length === 0 ? <tr><td colSpan={7}><div className="state-box"><div className="state-icon">📊</div><div className="state-title">Aucun ajustement</div></div></td></tr>
-                : filteredHisto.map(h => (
-                  <tr key={h.uuid}>
-                    <td style={{ fontWeight: 500 }}>{h.produit_nom || '—'}</td>
-                    <td><span className="badge badge-muted">{h.motif || '—'}</span></td>
-                    <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{h.operateur || '—'}</td>
-                    <td style={{ textAlign: 'center', fontFamily: 'var(--font-mono)' }}>{h.ancienne_qte ?? '—'}</td>
-                    <td style={{ textAlign: 'center', fontFamily: 'var(--font-mono)', fontWeight: 700, color: deltaColor(h.delta) }}>
-                      {h.delta > 0 ? `+${h.delta}` : h.delta}
-                    </td>
-                    <td style={{ textAlign: 'center', fontFamily: 'var(--font-mono)' }}>{h.nouvelle_qte ?? '—'}</td>
-                    <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{formatDateTime(h.date_op)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
+      {/* Filters */}
+      <div className="filters-bar" style={{ marginBottom: 16 }}>
+        <DateRangePicker
+          mode={dateMode}
+          customRange={customRange}
+          onChange={(m, r) => { setDateMode(m); setCustomRange(r); }}
+        />
+        <div style={{ position: 'relative', flex: 1, minWidth: 160, maxWidth: 320 }}>
+          <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+          <input
+            id="search-stock"
+            className="filter-input"
+            style={{ paddingLeft: 30, width: '100%' }}
+            placeholder="Chercher action, détail, opérateur..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
+      </div>
 
-      {tab === 'lots' && (
-        <>
-          {lotsExpirantBientot.length > 0 && (
-            <div style={{ background: 'var(--warning-dim)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 'var(--radius-md)', padding: '10px 16px', marginBottom: 16, fontSize: 13, color: 'var(--warning)' }}>
-              ⚠️ {lotsExpirantBientot.length} lot(s) expirent dans les 30 prochains jours
-            </div>
-          )}
-          <div className="table-wrapper">
-            <table>
-              <thead><tr><th>N° Lot</th><th>Localisation</th><th style={{ textAlign: 'center' }}>Qté restante</th><th>Expiration</th></tr></thead>
-              <tbody>
-                {lots.length === 0 ? <tr><td colSpan={4}><div className="state-box"><div className="state-icon">📦</div><div className="state-title">Aucun lot</div></div></td></tr>
-                : lots.map(l => {
-                  const expiring = lotsExpirantBientot.some(ex => ex.uuid === l.uuid);
-                  const expired = l.date_expiration && new Date(l.date_expiration) < new Date();
-                  return (
-                    <tr key={l.uuid}>
-                      <td className="mono">{l.numero_lot || '—'}</td>
-                      <td><span className="badge badge-muted">{l.localisation}</span></td>
-                      <td style={{ textAlign: 'center', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{l.quantite_restante}</td>
-                      <td style={{ color: expired ? 'var(--danger)' : expiring ? 'var(--warning)' : 'var(--text-primary)', fontSize: 12 }}>
-                        {l.date_expiration ? new Date(l.date_expiration).toLocaleDateString('fr-FR') : '—'}
-                        {expired ? ' ❌ Expiré' : expiring ? ' ⚠️ Bientôt' : ''}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
+      {/* Table */}
+      <div className="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Action</th>
+              <th>Détail</th>
+              <th>Opérateur</th>
+              <th style={{ textAlign: 'right' }}>Montant</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={5}><div className="state-box"><div className="spinner" /></div></td></tr>
+            ) : filtered.length === 0 ? (
+              <tr><td colSpan={5}>
+                <div className="state-box">
+                  <div className="state-icon">📦</div>
+                  <div className="state-title">Aucun mouvement de stock trouvé</div>
+                  <div className="state-subtitle">Changez la période ou les filtres</div>
+                </div>
+              </td></tr>
+            ) : filtered.map(e => (
+              <tr key={e.uuid}>
+                <td style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                  {formatDateTime(e.date_action)}
+                </td>
+                <td>
+                  <span className="badge badge-info" style={{ fontSize: 11 }}>
+                    <Package size={11} /> {e.action || '—'}
+                  </span>
+                </td>
+                <td style={{ fontSize: 12, color: 'var(--text-secondary)', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {e.detail || '—'}
+                </td>
+                <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {e.operateur || '—'}
+                </td>
+                <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700, color: e.montant > 0 ? 'var(--success)' : e.montant < 0 ? 'var(--danger)' : 'var(--text-muted)' }}>
+                  {e.montant !== 0 ? formatMoney(e.montant) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
-      {tab === 'transferts' && (
-        <>
-          <div className="filters-bar">
-            <DateRangePicker mode={dateMode} customRange={customRange} onChange={(m, r) => { setDateMode(m); setCustomRange(r); }} />
-          </div>
-          <div className="table-wrapper">
-            <table>
-              <thead><tr><th>Source</th><th>Destination</th><th style={{ textAlign: 'center' }}>Quantité</th><th>Opérateur</th><th>Date</th></tr></thead>
-              <tbody>
-                {transferts.length === 0 ? <tr><td colSpan={5}><div className="state-box"><div className="state-icon">🔄</div><div className="state-title">Aucun transfert</div></div></td></tr>
-                : transferts.map(t => (
-                  <tr key={t.uuid}>
-                    <td><span className="badge badge-muted">{t.source}</span></td>
-                    <td><span className="badge badge-info">{t.destination}</span></td>
-                    <td style={{ textAlign: 'center', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{t.quantite}</td>
-                    <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t.operateur || '—'}</td>
-                    <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{formatDateTime(t.date_transfert)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+      {filtered.length > 0 && !loading && (
+        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)', textAlign: 'right' }}>
+          {filtered.length} mouvement{filtered.length > 1 ? 's' : ''} affiché{filtered.length > 1 ? 's' : ''}
+        </div>
       )}
     </div>
   );

@@ -9,13 +9,14 @@ import {
   CartesianGrid, PieChart, Pie, Cell, Legend,
 } from 'recharts';
 import { getSupabaseClient } from '@/lib/supabase';
-import { formatMoney, formatDateTime, modePaymentLabel } from '@/lib/utils';
+import { formatMoney, formatDateTime, modePaymentLabel, getDateRange, DateRange } from '@/lib/utils';
 import { useRealtime } from '@/hooks/useRealtime';
+import DateRangePicker from '@/components/ui/DateRangePicker';
 
 interface KPI {
-  caJour: number;
-  caMois: number;
-  nbVentesJour: number;
+  caPeriod: number;
+  profitPeriod: number;
+  nbVentesPeriod: number;
   stockAlertes: number;
   reservationsJour: number;
   nbEmployes: number;
@@ -43,44 +44,69 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 
 export default function DashboardHome() {
   const client = getSupabaseClient();
-  const [kpi, setKpi] = useState<KPI>({ caJour: 0, caMois: 0, nbVentesJour: 0, stockAlertes: 0, reservationsJour: 0, nbEmployes: 0 });
+  const [kpi, setKpi] = useState<KPI>({ caPeriod: 0, profitPeriod: 0, nbVentesPeriod: 0, stockAlertes: 0, reservationsJour: 0, nbEmployes: 0 });
   const [salesChart, setSalesChart] = useState<SalePoint[]>([]);
   const [payModes, setPayModes] = useState<PayMode[]>([]);
   const [recentSales, setRecentSales] = useState<RecentSale[]>([]);
+  const [dateMode, setDateMode] = useState<'today' | 'week' | 'month' | 'custom'>('today');
+  const [customRange, setCustomRange] = useState<DateRange>(getDateRange('today'));
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     if (!client) return;
-    const today = new Date().toISOString().slice(0, 10);
-    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+    setLoading(true);
+    const range = getDateRange(dateMode, customRange);
+    const rangeStart = range.from;
+    const rangeEnd = range.to + 'T23:59:59';
 
-    const [ventesJour, ventesMois, produits, employes, reserv, recent] = await Promise.all([
-      client.from('ventes').select('total_ttc, mode_paiement').gte('date_vente', today).eq('statut', 'valide'),
-      client.from('ventes').select('total_ttc').gte('date_vente', monthStart).eq('statut', 'valide'),
+    const [ventesPeriod, produits, employes, reserv, recent] = await Promise.all([
+      client.from('ventes').select('uuid, total_ttc, mode_paiement').gte('date_vente', rangeStart).lte('date_vente', rangeEnd).eq('statut', 'valide'),
       client.from('produits').select('stock_actuel, stock_alerte').eq('actif', 1).gte('stock_alerte', 0),
       client.from('employes').select('uuid').eq('actif', 1),
       client.from('reservations').select('uuid').eq('statut', 'en_attente'),
       client.from('ventes').select('uuid, numero_ticket, date_vente, total_ttc, mode_paiement, nom_caissier').eq('statut', 'valide').order('date_vente', { ascending: false }).limit(8),
     ]);
 
-    const caJour = (ventesJour.data || []).reduce((s: number, v: any) => s + (v.total_ttc || 0), 0);
-    const caMois = (ventesMois.data || []).reduce((s: number, v: any) => s + (v.total_ttc || 0), 0);
-    const nbVentesJour = (ventesJour.data || []).length;
+    const ventesData = ventesPeriod.data || [];
+    const venteUuids = ventesData.map((v: any) => v.uuid).filter(Boolean);
+
+    const caPeriod = ventesData.reduce((s: number, v: any) => s + (v.total_ttc || 0), 0);
+    const nbVentesPeriod = ventesData.length;
     const stockAlertes = (produits.data || []).filter((p: any) => p.stock_actuel >= 0 && p.stock_actuel <= p.stock_alerte).length;
 
-    // Pay modes pie
+    // Profit calculation — fetch lignes_vente for the valid sale UUIDs
+    let profitPeriod = 0;
+    if (venteUuids.length > 0) {
+      const { data: lignes } = await client
+        .from('lignes_vente')
+        .select('total_ttc, quantite, prix_achat')
+        .in('vente_uuid', venteUuids);
+      profitPeriod = (lignes || []).reduce((s: number, l: any) => {
+        const coutAchat = (l.prix_achat || 0) * (l.quantite || 0);
+        return s + ((l.total_ttc || 0) - coutAchat);
+      }, 0);
+    }
+
+    // Pay modes pie (always based on filtered period)
     const modeMap: Record<string, number> = {};
-    (ventesJour.data || []).forEach((v: any) => {
+    (ventesPeriod.data || []).forEach((v: any) => {
       const m = modePaymentLabel(v.mode_paiement || 'CASH');
       modeMap[m] = (modeMap[m] || 0) + (v.total_ttc || 0);
     });
     const payModesData = Object.entries(modeMap).map(([name, value]) => ({ name, value }));
 
-    setKpi({ caJour, caMois, nbVentesJour, stockAlertes, reservationsJour: (reserv.data || []).length, nbEmployes: (employes.data || []).length });
+    setKpi({
+      caPeriod,
+      profitPeriod,
+      nbVentesPeriod,
+      stockAlertes,
+      reservationsJour: (reserv.data || []).length,
+      nbEmployes: (employes.data || []).length
+    });
     setPayModes(payModesData);
     setRecentSales(recent.data || []);
 
-    // 7-day chart
+    // 7-day chart (kept fixed for trend)
     const days: SalePoint[] = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(); d.setDate(d.getDate() - i);
@@ -92,7 +118,7 @@ export default function DashboardHome() {
     }
     setSalesChart(days);
     setLoading(false);
-  }, [client]);
+  }, [client, dateMode, customRange]);
 
   useEffect(() => { load(); }, [load]);
   useRealtime('ventes', load);
@@ -114,9 +140,9 @@ export default function DashboardHome() {
           <p className="page-subtitle">Tableau de bord en temps réel</p>
         </div>
         <div className="page-actions">
-          <div className="realtime-badge"><div className="realtime-dot" /> Temps réel</div>
+          <DateRangePicker mode={dateMode} customRange={customRange} onChange={(m, r) => { setDateMode(m); setCustomRange(r); }} />
           <button className="btn btn-secondary btn-sm" onClick={load} id="btn-refresh-home">
-            <RefreshCw size={13} /> Actualiser
+            <RefreshCw size={13} />
           </button>
         </div>
       </div>
@@ -125,18 +151,18 @@ export default function DashboardHome() {
       <div className="stat-grid stat-grid-4 mb-6">
         <div className="stat-card violet">
           <div className="stat-icon violet"><DollarSign size={18} /></div>
-          <div className="stat-value mono">{formatMoney(kpi.caJour)}</div>
-          <div className="stat-label">Chiffre d'affaires aujourd'hui</div>
-        </div>
-        <div className="stat-card cyan">
-          <div className="stat-icon cyan"><TrendingUp size={18} /></div>
-          <div className="stat-value mono">{formatMoney(kpi.caMois)}</div>
-          <div className="stat-label">CA ce mois</div>
+          <div className="stat-value mono">{formatMoney(kpi.caPeriod)}</div>
+          <div className="stat-label">Chiffre d'affaires (Période)</div>
         </div>
         <div className="stat-card success">
-          <div className="stat-icon success"><ShoppingCart size={18} /></div>
-          <div className="stat-value mono">{kpi.nbVentesJour}</div>
-          <div className="stat-label">Ventes aujourd'hui</div>
+          <div className="stat-icon success"><TrendingUp size={18} /></div>
+          <div className="stat-value mono" style={{ color: 'var(--success)' }}>{formatMoney(kpi.profitPeriod)}</div>
+          <div className="stat-label">Bénéfice estimé (Période)</div>
+        </div>
+        <div className="stat-card cyan">
+          <div className="stat-icon cyan"><ShoppingCart size={18} /></div>
+          <div className="stat-value mono">{kpi.nbVentesPeriod}</div>
+          <div className="stat-label">Nombre de ventes (Période)</div>
         </div>
         <div className={`stat-card ${kpi.stockAlertes > 0 ? 'danger' : 'success'}`}>
           <div className={`stat-icon ${kpi.stockAlertes > 0 ? 'danger' : 'success'}`}><AlertTriangle size={18} /></div>

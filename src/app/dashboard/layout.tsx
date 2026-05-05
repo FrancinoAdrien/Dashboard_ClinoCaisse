@@ -11,6 +11,7 @@ import {
 import { useAuth } from '@/hooks/useAuth';
 import { clearAdminSession, clearDbCredentials } from '@/lib/auth';
 import { getInitials as gi } from '@/lib/utils';
+import { getSupabaseClient } from '@/lib/supabase';
 
 const NAV = [
   { href: '/dashboard', label: 'Vue d\'ensemble', icon: LayoutDashboard },
@@ -45,6 +46,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [companyLogo, setCompanyLogo] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -55,6 +57,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  useEffect(() => {
+    async function fetchLogo() {
+      const client = getSupabaseClient();
+      if (!client) return;
+      const { data } = await client.from('parametres').select('valeur').eq('cle', 'entreprise.logo').single();
+      if (data?.valeur) setCompanyLogo(data.valeur);
+    }
+    fetchLogo();
   }, []);
 
   if (loading) return (
@@ -99,7 +111,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {/* Sidebar */}
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
         <div className="sidebar-logo">
-          <div className="sidebar-logo-icon">🏪</div>
+          <div className="sidebar-logo-icon">
+            {companyLogo ? (
+              <img src={companyLogo} alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: 4 }} />
+            ) : (
+              '🏪'
+            )}
+          </div>
           {!collapsed && <span className="sidebar-logo-text">ClinoCaisse</span>}
           <button
             className="btn btn-ghost btn-icon"

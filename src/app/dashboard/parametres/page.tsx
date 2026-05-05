@@ -10,7 +10,7 @@ const PARAM_GROUPS: { title: string; icon: string; keys: string[] }[] = [
   { title: 'Entreprise', icon: '🏢', keys: ['entreprise.nom','entreprise.adresse','entreprise.ville','entreprise.telephone','entreprise.email','entreprise.nif','entreprise.stat','entreprise.slogan'] },
   { title: 'Caisse', icon: '💰', keys: ['caisse.devise','caisse.nom_poste','caisse.version','caisse.remise1','caisse.remise2'] },
   { title: 'Impression', icon: '🖨️', keys: ['impression.imprimante','impression.largeur','impression.copies_ticket','impression.copies_cloture','impression.actif'] },
-  { title: 'Licence', icon: '🔑', keys: ['license.activated','license.first_launch'] },
+  { title: 'Licence', icon: '🔑', keys: ['license.first_launch'] },
 ];
 
 function ParamCard({ title, icon, params, group }: { title: string; icon: string; params: Record<string, string>; group: typeof PARAM_GROUPS[0] }) {
@@ -107,7 +107,10 @@ export default function ParametresPage() {
           <h3 className="card-title"><Server size={15} /> Tous les paramètres ({Object.keys(params).length})</h3>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 8 }}>
-          {Object.entries(params).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => (
+          {Object.entries(params)
+            .filter(([k]) => k !== 'license.activated')
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([k, v]) => (
             <div key={k} style={{ background: 'var(--bg-tertiary)', borderRadius: 8, padding: '8px 12px' }}>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: 3 }}>{k}</div>
               <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
