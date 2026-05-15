@@ -4,14 +4,53 @@ import { Settings, RefreshCw, Database, Server } from 'lucide-react';
 import { getSupabaseClient } from '@/lib/supabase';
 import { getDbUrl, getDbLabel } from '@/lib/auth';
 
-interface Parametre { uuid: string; cle: string; valeur: string; date_maj?: string; }
+interface Parametre { uuid?: string; cle: string; valeur: string; date_maj?: string; }
 
 const PARAM_GROUPS: { title: string; icon: string; keys: string[] }[] = [
   { title: 'Entreprise', icon: '🏢', keys: ['entreprise.nom','entreprise.adresse','entreprise.ville','entreprise.telephone','entreprise.email','entreprise.nif','entreprise.stat','entreprise.slogan'] },
   { title: 'Caisse', icon: '💰', keys: ['caisse.devise','caisse.nom_poste','caisse.version','caisse.remise1','caisse.remise2'] },
   { title: 'Impression', icon: '🖨️', keys: ['impression.imprimante','impression.largeur','impression.copies_ticket','impression.copies_cloture','impression.actif'] },
-  { title: 'Licence', icon: '🔑', keys: ['license.first_launch'] },
+  { title: 'Licence', icon: '🔑', keys: ['license.first_launch','license.monthly_activated_at','license.monthly_expires_at','license.monthly_first_day'] },
 ];
+
+const LICENSE_DECRYPT_KEYS = new Set(['license.monthly_activated_at', 'license.monthly_expires_at', 'license.monthly_first_day']);
+const LICENSE_SECRET = 'clinocaisse_secure_key_1412_0410';
+
+function hexToUint8Array(hex: string) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i += 1) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
+
+async function getAesKey() {
+  const secretBytes = new TextEncoder().encode(LICENSE_SECRET);
+  const hash = await crypto.subtle.digest('SHA-256', secretBytes);
+  return crypto.subtle.importKey('raw', hash, { name: 'AES-CBC' }, false, ['decrypt']);
+}
+
+async function decryptLicenseValue(encrypted: string): Promise<string | null> {
+  try {
+    const parts = encrypted.split(':');
+    if (parts.length !== 2) return null;
+    const iv = hexToUint8Array(parts[0]);
+    const ciphertext = hexToUint8Array(parts[1]);
+    const key = await getAesKey();
+    const decryptedBuffer = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, key, ciphertext);
+    return new TextDecoder().decode(decryptedBuffer);
+  } catch (err) {
+    return null;
+  }
+}
+
+async function getParamValue(cle: string, valeur: string | null | undefined) {
+  if (!valeur) return '';
+  if (!LICENSE_DECRYPT_KEYS.has(cle)) return valeur;
+
+  const decrypted = await decryptLicenseValue(valeur);
+  return decrypted ?? valeur;
+}
 
 function ParamCard({ title, icon, params, group }: { title: string; icon: string; params: Record<string, string>; group: typeof PARAM_GROUPS[0] }) {
   return (
@@ -48,7 +87,10 @@ export default function ParametresPage() {
     setLoading(true);
     const { data } = await client.from('parametres').select('cle, valeur');
     const map: Record<string, string> = {};
-    (data || []).forEach((p: Parametre) => { if (p.cle) map[p.cle] = p.valeur; });
+    await Promise.all((data || []).map(async (p: Parametre) => {
+      if (!p.cle) return;
+      map[p.cle] = await getParamValue(p.cle, p.valeur);
+    }));
     setParams(map);
     setDbInfo({ url: getDbUrl(), label: getDbLabel() });
     setLoading(false);
